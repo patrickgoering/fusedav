@@ -173,6 +173,28 @@ static int proppatch_with_redirect(
     return ret;
 }
 
+static int chmod_internal(
+        ne_session *session,
+        const char *path,
+        mode_t mode) {
+    const ne_propname executable = { "http://apache.org/dav/props/", "executable" };
+    ne_proppatch_operation ops[2];
+    int r = 0;
+
+    ops[0].name = &executable;
+    ops[0].type = ne_propset;
+    ops[0].value = mode & 0111 ? "T" : "F";
+    ops[1].name = NULL;
+
+    assert(path);
+
+    if (proppatch_with_redirect(session, path, ops)) {
+        fprintf(stderr, "PROPPATCH failed: %s\n", ne_get_error(session));
+        r = -ENOTSUP;
+    }
+
+    return r;
+}
 
 static void fill_stat(struct stat* st, const ne_prop_result_set *results, int is_dir) {
     const char *rt, *e, *gcl, *glm, *cd;
@@ -564,6 +586,7 @@ static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
     char tempfile[PATH_MAX];
     int fd;
     ne_session *session;
+    int r = 0;
 
     path = path_cvt(path);
     if (debug)
@@ -589,10 +612,13 @@ static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
 
     close(fd);
 
+    if (mode & 0111)
+        r = chmod_internal(session, path, mode);
+
     stat_cache_invalidate(path);
     dir_cache_invalidate_parent(path);
 
-    return 0;
+    return r;
 }
 
 static int dav_open(const char *path, struct fuse_file_info *info) {
@@ -1104,8 +1130,6 @@ finish:
 
 static int dav_chmod(const char *path, mode_t mode) {
     ne_session *session;
-    const ne_propname executable = { "http://apache.org/dav/props/", "executable" };
-    ne_proppatch_operation ops[2];
     int r = 0;
     
     assert(path);
@@ -1115,22 +1139,12 @@ static int dav_chmod(const char *path, mode_t mode) {
     if (debug)
         fprintf(stderr, "chmod(%s, %04o)\n", path, mode);
     
-    ops[0].name = &executable;
-    ops[0].type = ne_propset;
-    ops[0].value = mode & 0111 ? "T" : "F";
-    ops[1].name = NULL;
-
     if (!(session = session_get(1))) {
         r = -EIO;
         goto finish;
     }
+    r = chmod_internal(session, path, mode);
 
-    if (proppatch_with_redirect(session, path, ops)) {
-        fprintf(stderr, "PROPPATCH failed: %s\n", ne_get_error(session));
-        r = -ENOTSUP;
-        goto finish;
-    }
-    
     stat_cache_invalidate(path);
 
 finish:

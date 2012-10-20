@@ -1387,7 +1387,7 @@ int main(int argc, char *argv[]) {
 
     if (!ne_has_support(NE_FEATURE_SSL) ||
         !ne_has_support(NE_FEATURE_TS_SSL) ||
-        !ne_has_support(NE_FEATURE_LFS)) {
+        !((sizeof(ne_off_t) >= 8) || ne_has_support(NE_FEATURE_LFS))) {
         fprintf(stderr, "fusedav requires libneon built with SSL, SSL thread safety and LFS enabled.\n");
         goto finish;
     }

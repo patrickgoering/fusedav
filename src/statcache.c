@@ -100,16 +100,15 @@ int stat_cache_get(const char *fn, struct stat *st) {
         time(NULL) <= ce->stat_info.dead) {
         
         *st = ce->stat_info.st;
-
-        if ((f = file_cache_get(fn))) {
-            st->st_size = file_cache_get_size(f);
-            file_cache_unref(f);
-        }
-
         r = 0;
     }
 
     pthread_mutex_unlock(&stat_cache_mutex);
+
+    if ((r == 0) && (f = file_cache_get(fn))) {
+        st->st_size = file_cache_get_size(f);
+        file_cache_unref(f);
+    }
     
     return r;
 }

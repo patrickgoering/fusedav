@@ -232,7 +232,7 @@ fail:
     return NULL;
 }
 
-static int load_up_to_unlocked(struct file_info *fi, off_t l) {
+static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) {
 #ifndef ne_get_range64
 #define NE_GET_RANGE ne_get_range
     ne_content_range range;
@@ -241,6 +241,11 @@ static int load_up_to_unlocked(struct file_info *fi, off_t l) {
     ne_content_range64 range;
 #endif
     ne_session *session;
+    off_t l = size;
+    int contiguous = 0;
+
+    if (offset)
+        l += *offset;
 
     assert(fi);
 
@@ -255,10 +260,17 @@ static int load_up_to_unlocked(struct file_info *fi, off_t l) {
     if (l <= fi->present)
         return 0;
 
-    if (lseek(fi->fd, fi->present, SEEK_SET) != fi->present)
-        return -1;
-    
-    range.start = fi->present;
+    if (offset && *offset > fi->present) {
+        if (lseek(fi->fd, *offset, SEEK_SET) != *offset)
+            return -1;
+        range.start = *offset;
+    } else {
+        if (lseek(fi->fd, fi->present, SEEK_SET) != fi->present)
+                return -1;
+        range.start = fi->present;
+        contiguous = 1;
+    }
+
     range.end = l-1;
     range.total = 0;
     
@@ -268,7 +280,9 @@ static int load_up_to_unlocked(struct file_info *fi, off_t l) {
         return -1;
     }
 
-    fi->present = l;
+    if (contiguous)
+        fi->present = l;
+
     return 0;
 #undef NE_GET_RANGE
 }
@@ -281,7 +295,7 @@ int file_cache_read(void *f, char *buf, size_t size, off_t offset) {
 
     pthread_mutex_lock(&fi->mutex);
 
-    if (load_up_to_unlocked(fi, offset+size) < 0)
+    if (load_up_to_unlocked(fi, size, &offset) < 0)
         goto finish;
 
     if ((r = pread(fi->fd, buf, size, offset)) < 0)
@@ -307,7 +321,7 @@ int file_cache_write(void *f, const char *buf, size_t size, off_t offset) {
         goto finish;
     }
 
-    if (load_up_to_unlocked(fi, offset) < 0)
+    if (load_up_to_unlocked(fi, offset, NULL) < 0)
         goto finish;
         
     if ((r = pwrite(fi->fd, buf, size, offset)) < 0)
@@ -359,7 +373,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
         goto finish;
     }
     
-    if (load_up_to_unlocked(fi, (off_t) -1) < 0)
+    if (load_up_to_unlocked(fi, (off_t) -1, NULL) < 0)
         goto finish;
 
     if (lseek(fi->fd, 0, SEEK_SET) == (off_t)-1)

@@ -199,7 +199,7 @@ void* file_cache_open(const char *path, int flags) {
         /* dirty hack, since Apache doesn't send the file size if the file is empty */
         fi->server_length = fi->length = 0; 
     else
-        fi->server_length = fi->length = atoi(length);
+        fi->server_length = fi->length = (off_t)atoll(length);
 
     ne_request_destroy(req);
     

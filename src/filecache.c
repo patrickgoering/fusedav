@@ -260,7 +260,12 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
     if (l <= fi->present)
         return 0;
 
-    if (offset && *offset > fi->present) {
+    if (offset && ! fi->writable) {
+        if (lseek(fi->fd, 0, SEEK_SET) != 0)
+            return -1;
+        range.start = *offset;
+        *offset = 0; /* caller will call pread() on zero */
+    } else if (offset && *offset > fi->present) {
         if (lseek(fi->fd, *offset, SEEK_SET) != *offset)
             return -1;
         range.start = *offset;

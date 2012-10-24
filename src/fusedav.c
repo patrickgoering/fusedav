@@ -802,8 +802,8 @@ static int listxattr_iterator(
     if (l->list) {
         n = snprintf(l->list, l->space, "user.webdav(%s;%s)", pname->nspace, pname->name) + 1;
         
-        if (n >= (int) l->space) {
-            l->size += l->space;
+        if (n > (int) l->space) {
+            l->size += n;
             l->space = 0;
             return 1;
             
@@ -847,7 +847,7 @@ static int dav_listxattr(
 
     if (list) {
         l.list = list;
-        l.space = size-1;
+        l.space = size;
         l.size = 0;
 
         if (l.space >= sizeof(MIME_XATTR)) {
@@ -871,12 +871,7 @@ static int dav_listxattr(
         return -EIO;
     }
 
-    if (l.list) {
-        assert(l.space > 0);
-        *l.list = 0;
-    }
-
-    return l.size+1;
+    return l.size;
 }
 
 struct getxattr_info {

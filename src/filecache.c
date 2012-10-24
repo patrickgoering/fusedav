@@ -359,7 +359,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
         goto finish;
     }
     
-    if (load_up_to_unlocked(fi, (off_t) -1) < 0)
+    if (load_up_to_unlocked(fi, fi->length) < 0)
         goto finish;
 
     if (lseek(fi->fd, 0, SEEK_SET) == (off_t)-1)

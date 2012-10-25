@@ -70,10 +70,8 @@ static pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int file_cache_sync_unlocked(struct file_info *fi);
 
-void* file_cache_get(const char *path) {
+static void* file_cache_get_unlocked(const char *path) {
     struct file_info *f, *r = NULL;
-
-    pthread_mutex_lock(&files_mutex);
     
     for (f = files; f; f = f->next) {
         
@@ -85,10 +83,19 @@ void* file_cache_get(const char *path) {
         pthread_mutex_unlock(&f->mutex);
 
         if (r)
-            break;
+            return r;
     }
-    
+
+    return NULL;
+}
+
+void* file_cache_get(const char *path) {
+    struct file_info *f;
+
+    pthread_mutex_lock(&files_mutex);
+    f = file_cache_get_unlocked(path);
     pthread_mutex_unlock(&files_mutex);
+
     return f;
 }
 
@@ -157,29 +164,47 @@ int file_cache_close(void *f) {
     return r;
 }
 
+static void file_cache_update_flags_unlocked(struct file_info *fi, int flags)
+{
+    if (flags & O_RDONLY || flags & O_RDWR) fi->readable = 1;
+    if (flags & O_WRONLY || flags & O_RDWR) fi->writable = 1;
+}
+
 void* file_cache_open(const char *path, int flags) {
     struct file_info *fi = NULL;
     char tempfile[PATH_MAX];
     const char *length = NULL;
     ne_request *req = NULL;
     ne_session *session;
+    int cached = 0;
 
     if (!(session = session_get(1))) {
         errno = EIO;
-        goto fail;
+        return NULL;
     }
 
-    if ((fi = file_cache_get(path))) {
-        if (flags & O_RDONLY || flags & O_RDWR) fi->readable = 1;
-        if (flags & O_WRONLY || flags & O_RDWR) fi->writable = 1;
+    pthread_mutex_lock(&files_mutex);
+
+    if ((fi = file_cache_get_unlocked(path))) {
+        pthread_mutex_lock(&fi->mutex);
+        file_cache_update_flags_unlocked(fi, flags);
+        pthread_mutex_unlock(&fi->mutex);
+        cached = 1;
+    } else {
+        fi = calloc(1, sizeof(struct file_info));
+        assert(fi);
+        fi->filename = strdup(path);
+        assert(fi->filename);
+        pthread_mutex_init(&fi->mutex, NULL);
+        pthread_mutex_lock(&fi->mutex);
+        fi->next = files;
+        files = fi;
+    }
+
+    pthread_mutex_unlock(&files_mutex);
+
+    if (cached)
         return fi;
-    }
-
-    fi = malloc(sizeof(struct file_info));
-    memset(fi, 0, sizeof(struct file_info));
-    fi->fd = -1;
-
-    fi->filename = strdup(path);
 
     snprintf(tempfile, sizeof(tempfile), "%s/fusedav-cache-XXXXXX", "/tmp");
     if ((fi->fd = mkstemp(tempfile)) < 0)
@@ -202,19 +227,11 @@ void* file_cache_open(const char *path, int flags) {
         fi->server_length = fi->length = (off_t)atoll(length);
 
     ne_request_destroy(req);
-    
-    if (flags & O_RDONLY || flags & O_RDWR) fi->readable = 1;
-    if (flags & O_WRONLY || flags & O_RDWR) fi->writable = 1;
 
-    pthread_mutex_init(&fi->mutex, NULL);
-    
-    pthread_mutex_lock(&files_mutex);
-    fi->next = files;
-    files = fi;
-    pthread_mutex_unlock(&files_mutex);
-
+    file_cache_update_flags_unlocked(fi, flags);
     fi->ref = 1;
-    
+    pthread_mutex_unlock(&fi->mutex);
+
     return fi;
 
 fail:
@@ -223,10 +240,9 @@ fail:
         ne_request_destroy(req);
 
     if (fi) {
-        if (fi->fd >= 0)
-            close(fi->fd);
-        free(fi->filename);
-        free(fi);
+        pthread_mutex_unlock(&fi->mutex);
+        fi->dead = 1;
+        file_cache_free_unlocked(fi);
     }
         
     return NULL;
@@ -423,8 +439,13 @@ int file_cache_close_all(void) {
 
 off_t file_cache_get_size(void *f) {
     struct file_info *fi = f;
+    off_t length;
 
     assert(fi);
 
-    return fi->length;
+    pthread_mutex_lock(&fi->mutex);
+    length = fi->length;
+    pthread_mutex_unlock(&fi->mutex);
+
+    return length;
 }

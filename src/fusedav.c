@@ -710,9 +710,10 @@ static int dav_truncate(const char *path, off_t size) {
     if (debug)
         fprintf(stderr, "truncate(%s, %lu)\n", path, (unsigned long) size);
 
-    if (!(session = session_get(1)))
+    if (!(session = session_get(1))) {
         r = -EIO;
         goto finish;
+    }
     
     if (!(f = file_cache_get(path))) {
         fprintf(stderr, "truncate() called for closed file\n");

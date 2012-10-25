@@ -265,6 +265,9 @@ static int load_up_to_unlocked(struct file_info *fi, off_t l) {
         return -1;
     }
 
+    if (l > fi->length)
+        l = fi->length;
+
     if (l > fi->server_length)
         l = fi->server_length;
     
@@ -353,6 +356,9 @@ int file_cache_truncate(void *f, off_t s) {
 
     fi->length = s;
     r = ftruncate(fi->fd, fi->length);
+    fi->modified = 1;
+    if (fi->present > s)
+        fi->present = s;
 
     pthread_mutex_unlock(&fi->mutex);
 

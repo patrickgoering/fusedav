@@ -398,6 +398,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
         goto finish;
     }
 
+    fi->modified = 0;
     stat_cache_invalidate(fi->filename);
     dir_cache_invalidate_parent(fi->filename);
 

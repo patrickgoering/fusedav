@@ -549,7 +549,7 @@ finish:
     return r;
 }
 
-static int dav_fsync(const char *path, __unused int isdatasync, __unused struct fuse_file_info *info) {
+static int flush_internal(const char *fn, const char *path, __unused struct fuse_file_info *fi) {
     void *f = NULL;
     int r = 0;
     ne_session *session;
@@ -558,7 +558,7 @@ static int dav_fsync(const char *path, __unused int isdatasync, __unused struct 
 
     path = path_cvt(path);
     if (debug)
-        fprintf(stderr, "fsync(%s)\n", path);
+        fprintf(stderr, "%s(%s)\n", fn, path);
 
     if (!(session = session_get(1))) {
         r = -EIO;
@@ -566,7 +566,7 @@ static int dav_fsync(const char *path, __unused int isdatasync, __unused struct 
     }
 
     if (!(f = file_cache_get(path))) {
-        fprintf(stderr, "fsync() called for closed file\n");
+        fprintf(stderr, "%s() called for closed file\n", fn);
         r = -EFAULT;
         goto finish;
     }
@@ -588,6 +588,14 @@ finish:
         file_cache_unref(f);
 
     return r;
+}
+
+static int dav_flush(const char *path, struct fuse_file_info *fi) {
+	return flush_internal("flush", path, fi);
+}
+
+static int dav_fsync(const char *path, __unused int isdatasync, struct fuse_file_info *fi) {
+	return flush_internal("fsync", path, fi);
 }
 
 static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
@@ -1167,6 +1175,7 @@ static struct fuse_operations dav_oper = {
     .chmod       = dav_chmod,
     .truncate	 = dav_truncate,
     .utime       = dav_utime,
+    .flush       = dav_flush,
     .open	 = dav_open,
     .read	 = dav_read,
     .write	 = dav_write,

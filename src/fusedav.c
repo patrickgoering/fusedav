@@ -553,6 +553,8 @@ static int dav_fsync(const char *path, __unused int isdatasync, __unused struct 
     void *f = NULL;
     int r = 0;
     ne_session *session;
+    struct stat st;
+    int stat_rc;
 
     path = path_cvt(path);
     if (debug)
@@ -569,10 +571,16 @@ static int dav_fsync(const char *path, __unused int isdatasync, __unused struct 
         goto finish;
     }
 
+    stat_rc = get_stat(path, &st);
+
     if (file_cache_sync(f) < 0) {
         r = -errno;
         goto finish;
     }
+
+    /* ensure we keep the executable bit if the file existed */
+    if (stat_rc == 0 && (st.st_mode & 0111))
+        r = chmod_internal(session, path, st.st_mode);
 
 finish:
     

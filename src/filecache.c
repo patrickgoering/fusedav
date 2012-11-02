@@ -57,7 +57,7 @@ struct file_info {
 
     int modified;
 
-    int ref, dead;
+    int ref;
 
     pthread_mutex_t mutex;
 
@@ -68,6 +68,7 @@ struct file_info {
 static struct file_info *files = NULL;
 static pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static void file_cache_unlink(struct file_info *fi);
 static int file_cache_sync_unlocked(struct file_info *fi);
 
 static void* file_cache_get_unlocked(const char *path) {
@@ -76,7 +77,7 @@ static void* file_cache_get_unlocked(const char *path) {
     for (f = files; f; f = f->next) {
         
         pthread_mutex_lock(&f->mutex);
-        if (!f->dead && f->filename && !strcmp(path, f->filename)) {
+        if (f->ref && f->filename && !strcmp(path, f->filename)) {
             f->ref++;
             r = f;
         }
@@ -100,7 +101,7 @@ void* file_cache_get(const char *path) {
 }
 
 static void file_cache_free_unlocked(struct file_info *fi) {
-    assert(fi && fi->dead && fi->ref == 0);
+    assert(fi && fi->ref == 0);
 
     free(fi->filename);
 
@@ -113,6 +114,7 @@ static void file_cache_free_unlocked(struct file_info *fi) {
 
 void file_cache_unref(void *f) {
     struct file_info *fi = f;
+    int unlinked = 0;
     assert(fi);
 
     pthread_mutex_lock(&fi->mutex);
@@ -120,22 +122,29 @@ void file_cache_unref(void *f) {
     assert(fi->ref >= 1);
     fi->ref--;
 
-    if (!fi->ref && fi->dead) {
-        file_cache_sync_unlocked(fi);
-        file_cache_free_unlocked(fi);
+    if (fi->ref == 0) {
+        if (fi->writable)
+            file_cache_sync_unlocked(fi);
+        file_cache_unlink(fi);
+        unlinked = 1;
     }
 
     pthread_mutex_unlock(&fi->mutex);
+
+    if (unlinked)
+        file_cache_free_unlocked(fi);
 }
 
 static void file_cache_unlink(struct file_info *fi) {
     struct file_info *s, *prev;
+    int found = 0;
     assert(fi);
 
     pthread_mutex_lock(&files_mutex);
     
     for (s = files, prev = NULL; s; s = s->next) {
         if (s == fi) {
+            found = 1;
             if (prev)
                 prev->next = s->next;
             else
@@ -148,20 +157,9 @@ static void file_cache_unlink(struct file_info *fi) {
     }
     
     pthread_mutex_unlock(&files_mutex);
-}
 
-int file_cache_close(void *f) {
-    struct file_info *fi = f;
-    int r = 0;
-    assert(fi);
-
-    file_cache_unlink(f);
-
-    pthread_mutex_lock(&fi->mutex);
-    fi->dead = 1;
-    pthread_mutex_unlock(&fi->mutex);
-
-    return r;
+    if (!found)
+        fprintf(stderr, "file_cache_unlink(%s) failed", fi->filename);
 }
 
 static void file_cache_update_flags_unlocked(struct file_info *fi, int flags)
@@ -241,7 +239,6 @@ fail:
 
     if (fi) {
         pthread_mutex_unlock(&fi->mutex);
-        fi->dead = 1;
         file_cache_free_unlocked(fi);
     }
         
@@ -415,7 +412,7 @@ int file_cache_sync(void *f) {
     assert(fi);
 
     pthread_mutex_lock(&fi->mutex);
-    r = file_cache_sync_unlocked(fi);
+    r = fi->writable ? file_cache_sync_unlocked(fi) : 0;
     pthread_mutex_unlock(&fi->mutex);
     
     return r;
@@ -429,12 +426,7 @@ int file_cache_close_all(void) {
     while (files) {
         struct file_info *fi = files;
         
-        pthread_mutex_lock(&fi->mutex);
-        fi->ref++;
         pthread_mutex_unlock(&fi->mutex);
-
-        pthread_mutex_unlock(&files_mutex);
-        file_cache_close(fi);
         file_cache_unref(fi);
         pthread_mutex_lock(&files_mutex);
     }

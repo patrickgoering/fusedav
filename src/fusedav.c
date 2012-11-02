@@ -537,14 +537,13 @@ static int dav_release(const char *path, __unused struct fuse_file_info *info) {
         goto finish;
     }
 
-    if (file_cache_close(f) < 0) {
-        r = -errno;
-        goto finish;
-    }
+    /* reverse the ref increment from file_cache_get() */
+    file_cache_unref(f);
+
+    /* reverse the ref increment from dav_open() */
+    file_cache_unref(f);
 
 finish:
-    if (f)
-        file_cache_unref(f);
     
     return r;
 }
@@ -647,8 +646,6 @@ static int dav_open(const char *path, struct fuse_file_info *info) {
 
     if (!(f = file_cache_open(path, info->flags)))
         return -errno;
-
-    file_cache_unref(f);
 
     return 0;
 }

@@ -242,6 +242,7 @@ fail:
 
     if (fi) {
         pthread_mutex_unlock(&fi->mutex);
+        file_cache_unlink(fi);
         file_cache_free_unlocked(fi);
     }
         

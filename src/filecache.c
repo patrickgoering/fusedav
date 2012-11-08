@@ -426,7 +426,7 @@ int file_cache_close_all(void) {
     while (files) {
         struct file_info *fi = files;
         
-        pthread_mutex_unlock(&fi->mutex);
+        pthread_mutex_unlock(&files_mutex);
         file_cache_unref(fi);
         pthread_mutex_lock(&files_mutex);
     }

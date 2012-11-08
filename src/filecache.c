@@ -185,9 +185,6 @@ void* file_cache_open(const char *path, int flags) {
     pthread_mutex_lock(&files_mutex);
 
     if ((fi = file_cache_get_unlocked(path))) {
-        pthread_mutex_lock(&fi->mutex);
-        file_cache_update_flags_unlocked(fi, flags);
-        pthread_mutex_unlock(&fi->mutex);
         cached = 1;
     } else {
         fi = calloc(1, sizeof(struct file_info));
@@ -202,8 +199,13 @@ void* file_cache_open(const char *path, int flags) {
 
     pthread_mutex_unlock(&files_mutex);
 
-    if (cached)
+    if (cached) {
+        pthread_mutex_lock(&fi->mutex);
+        file_cache_update_flags_unlocked(fi, flags);
+        pthread_mutex_unlock(&fi->mutex);
+
         return fi;
+    }
 
     snprintf(tempfile, sizeof(tempfile), "%s/fusedav-cache-XXXXXX", "/tmp");
     if ((fi->fd = mkstemp(tempfile)) < 0)

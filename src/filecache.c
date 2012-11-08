@@ -125,14 +125,15 @@ void file_cache_unref(void *f) {
     if (fi->ref == 0) {
         if (fi->writable)
             file_cache_sync_unlocked(fi);
-        file_cache_unlink(fi);
         unlinked = 1;
     }
 
     pthread_mutex_unlock(&fi->mutex);
 
-    if (unlinked)
+    if (unlinked) {
+        file_cache_unlink(fi);
         file_cache_free_unlocked(fi);
+    }
 }
 
 static void file_cache_unlink(struct file_info *fi) {

@@ -1041,12 +1041,12 @@ static int dav_setxattr(
         fprintf(stderr, "setxattr(%s, %s)\n", path, name);
 
     if (flags) {
-        r = ENOTSUP;
+        r = -ENOTSUP;
         goto finish;
     }
     
     if (parse_xattr(name, dnspace, sizeof(dnspace), dname, sizeof(dname)) < 0) {
-        r = -ENOATTR;
+        r = -ENOTSUP;
         goto finish;
     }
 

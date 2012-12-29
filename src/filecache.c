@@ -67,6 +67,7 @@ struct file_info {
 
 static struct file_info *files = NULL;
 static pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
+static const char *tmpdir;
 
 static void file_cache_unlink(struct file_info *fi);
 static int file_cache_sync_unlocked(struct file_info *fi);
@@ -169,9 +170,45 @@ static void file_cache_update_flags_unlocked(struct file_info *fi, int flags)
     if (flags & O_WRONLY || flags & O_RDWR) fi->writable = 1;
 }
 
+void file_cache_init(void)
+{
+#if defined(P_tmpdir) /* defined in stdio.h */
+    static const char tmpdefault[] = P_tmpdir;
+#else
+    static const char tmpdefault[] = "/tmp";
+#endif
+
+    tmpdir = getenv("TMPDIR");
+    if (!tmpdir)
+        tmpdir = tmpdefault;
+}
+
+int file_cache_tmp(const char *id)
+{
+    char path[PATH_MAX];
+    int rc;
+
+    assert(tmpdir && "file_cache_init not called");
+    rc = snprintf(path, sizeof(path), "%s/fusedav-%s-XXXXXX", tmpdir, id);
+    if (rc <= 0 || rc >= (int)sizeof(path)) {
+        fprintf(stderr, "snprintf(%s/fusedav-%s-XXXXXX) returned: %d\n",
+                tmpdir, id, rc);
+        return -1;
+    }
+
+    if ((rc = mkstemp(path)) < 0) {
+        int save_errno = errno;
+        fprintf(stderr, "mkstemp failed: %s\n", strerror(errno));
+        errno = save_errno;
+    } else {
+        unlink(path);
+    }
+
+    return rc;
+}
+
 void* file_cache_open(const char *path, int flags) {
     struct file_info *fi = NULL;
-    char tempfile[PATH_MAX];
     const char *length = NULL;
     ne_request *req = NULL;
     ne_session *session;
@@ -207,10 +244,8 @@ void* file_cache_open(const char *path, int flags) {
         return fi;
     }
 
-    snprintf(tempfile, sizeof(tempfile), "%s/fusedav-cache-XXXXXX", "/tmp");
-    if ((fi->fd = mkstemp(tempfile)) < 0)
+    if ((fi->fd = file_cache_tmp("cache")) < 0)
         goto fail;
-    unlink(tempfile);
 
     req = ne_request_create(session, "HEAD", path);
     assert(req);

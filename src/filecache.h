@@ -37,4 +37,7 @@ int file_cache_close_all(void);
 
 off_t file_cache_get_size(void *f);
 
+void file_cache_init(void);
+int file_cache_tmp(const char *id);
+
 #endif

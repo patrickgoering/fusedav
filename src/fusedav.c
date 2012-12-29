@@ -598,7 +598,6 @@ static int dav_fsync(const char *path, __unused int isdatasync, struct fuse_file
 }
 
 static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
-    char tempfile[PATH_MAX];
     int fd;
     ne_session *session;
     int r = 0;
@@ -613,11 +612,8 @@ static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
     if (!S_ISREG(mode))
         return -ENOTSUP;
 
-    snprintf(tempfile, sizeof(tempfile), "%s/fusedav-empty-XXXXXX", "/tmp");
-    if ((fd = mkstemp(tempfile)) < 0)
-        return -errno;
-    
-    unlink(tempfile);
+    if ((fd = file_cache_tmp("empty")) < 0)
+	return -errno;
     
     if (ne_put(session, path, fd)) {
         fprintf(stderr, "mknod:PUT failed: %s\n", ne_get_error(session));
@@ -1443,6 +1439,7 @@ int main(int argc, char *argv[]) {
     umask(mask);
 
     cache_alloc();
+    file_cache_init();
 
     if (setup_signal_handlers() < 0)
         goto finish;

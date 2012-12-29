@@ -1161,6 +1161,28 @@ finish:
     return r;
 }
 
+static int dav_chown(const char *path, uid_t uid, gid_t gid) {
+    struct stat st;
+    int r;
+
+    /* ensure the file exists */
+    if ((r = get_stat(path, &st)) < 0)
+        return r;
+
+    if (gid == -1 && uid == -1)
+        return 0;
+
+    if (st.st_uid == uid) {
+        if (st.st_gid == gid || gid == -1)
+            return 0;
+    }
+
+    if (st.st_gid == gid && uid == -1)
+        return 0;
+
+    return -EPERM;
+}
+
 static struct fuse_operations dav_oper = {
     .getattr	 = dav_getattr,
     .readdir	 = dav_readdir,
@@ -1170,6 +1192,7 @@ static struct fuse_operations dav_oper = {
     .rmdir	 = dav_rmdir,
     .rename	 = dav_rename,
     .chmod       = dav_chmod,
+    .chown	 = dav_chown,
     .truncate	 = dav_truncate,
     .utime       = dav_utime,
     .flush       = dav_flush,

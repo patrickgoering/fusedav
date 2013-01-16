@@ -734,25 +734,25 @@ finish:
     return r;
 }
 
-static int dav_utime(const char *path, struct utimbuf *buf) {
+int fusedav_set_mtime(const char *path, time_t mtime)
+{
+    char *date;
+    int r = 0;
     ne_session *session;
     const ne_propname getlastmodified = { "DAV:", "getlastmodified" };
     ne_proppatch_operation ops[2];
-    int r = 0;
-    char *date;
-    
-    assert(path);
-    assert(buf);
 
-    path = path_cvt(path);
-    
-    if (debug)
-        fprintf(stderr, "utime(%s, %lu, %lu)\n", path, (unsigned long) buf->actime, (unsigned long) buf->modtime);
-    
     ops[0].name = &getlastmodified;
     ops[0].type = ne_propset;
-    ops[0].value = date = ne_rfc1123_date(buf->modtime);
+    ops[0].value = date = ne_rfc1123_date(mtime);
     ops[1].name = NULL;
+
+    /*
+     * ENOMEM isn't specified as a return value for utime(2),
+     * but neither are EIO or ENOTSUP below...
+     */
+    if (!date)
+        return -ENOMEM;
 
     if (!(session = session_get(1))) {
         r = -EIO;
@@ -764,11 +764,35 @@ static int dav_utime(const char *path, struct utimbuf *buf) {
         r = -ENOTSUP;
         goto finish;
     }
-    
-    stat_cache_invalidate(path);
 
 finish:
     free(date);
+
+    return r;
+}
+
+static int dav_utime(const char *path, struct utimbuf *buf) {
+    int r;
+
+    assert(path);
+    assert(buf);
+
+    path = path_cvt(path);
+
+    if (debug)
+        fprintf(stderr, "utime(%s, %lu, %lu)\n", path, (unsigned long) buf->actime, (unsigned long) buf->modtime);
+
+    /*
+     * If the file is open in the cache, just update it in the cache.
+     * It will be synced when the cached file is released.
+     */
+    if (file_cache_set_mtime(path, buf->modtime) == 0)
+        return 0;
+
+    /* file is not open, update DAV server immediately */
+    r = fusedav_set_mtime(path, buf->modtime);
+    if (r == 0)
+        stat_cache_invalidate(path);
     
     return r;
 }

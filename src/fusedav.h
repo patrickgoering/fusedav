@@ -21,7 +21,9 @@
   Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 ***/
 
+#include <time.h>
 extern int debug;
+int fusedav_set_mtime(const char *path, time_t mtime);
 
 #ifdef __GNUC__
 #define __unused __attribute__ ((unused))

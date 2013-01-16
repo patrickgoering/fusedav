@@ -106,7 +106,7 @@ int stat_cache_get(const char *fn, struct stat *st) {
     pthread_mutex_unlock(&stat_cache_mutex);
 
     if ((r == 0) && (f = file_cache_get(fn))) {
-        st->st_size = file_cache_get_size(f);
+        file_cache_fill_stat(f, st);
         file_cache_unref(f);
     }
     

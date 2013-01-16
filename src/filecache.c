@@ -32,6 +32,7 @@
 #include <pthread.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <time.h>
 
 #include <ne_props.h>
 #include <ne_uri.h>
@@ -56,6 +57,8 @@ struct file_info {
     int writable;
 
     int modified;
+    int mtime_modified;
+    time_t mtime;
 
     int ref;
 
@@ -368,6 +371,12 @@ finish:
     return r;
 }
 
+static void file_cache_modified(struct file_info *fi) {
+    fi->modified = 1;
+    fi->mtime_modified = 1;
+    fi->mtime = time(NULL);
+}
+
 int file_cache_write(void *f, const char *buf, size_t size, off_t offset) {
     struct file_info *fi = f;
     ssize_t r = -1;
@@ -393,7 +402,7 @@ int file_cache_write(void *f, const char *buf, size_t size, off_t offset) {
     if (offset+size > fi->length)
         fi->length = offset+size;
 
-    fi->modified = 1;
+    file_cache_modified(fi);
 
 finish:
     pthread_mutex_unlock(&fi->mutex);
@@ -411,7 +420,7 @@ int file_cache_truncate(void *f, off_t s) {
 
     fi->length = s;
     r = ftruncate(fi->fd, fi->length);
-    fi->modified = 1;
+    file_cache_modified(fi);
     if (fi->present > s)
         fi->present = s;
 
@@ -420,8 +429,21 @@ int file_cache_truncate(void *f, off_t s) {
     return r;
 }
 
+static int file_cache_sync_mtime_unlocked(struct file_info *fi, time_t now) {
+    int r = 0;
+
+    if (fi->mtime_modified) {
+        if (fi->mtime != now)
+            r = fusedav_set_mtime(fi->filename, fi->mtime);
+        fi->mtime_modified = 0;
+    }
+
+    return r;
+}
+
 int file_cache_sync_unlocked(struct file_info *fi) {
     int r = -1;
+    time_t now;
     ne_session *session;
 
     assert(fi);
@@ -432,7 +454,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
     }
 
     if (!fi->modified) {
-        r = 0;
+        r = file_cache_sync_mtime_unlocked(fi, time(NULL));
         goto finish;
     }
     
@@ -453,11 +475,11 @@ int file_cache_sync_unlocked(struct file_info *fi) {
         goto finish;
     }
 
+    now = time(NULL);
     fi->modified = 0;
+    r = file_cache_sync_mtime_unlocked(fi, now);
     stat_cache_invalidate(fi->filename);
     dir_cache_invalidate_parent(fi->filename);
-
-    r = 0;
 
 finish:
     
@@ -494,15 +516,39 @@ int file_cache_close_all(void) {
     return r;
 }
 
-off_t file_cache_get_size(void *f) {
+void file_cache_fill_stat(void *f, struct stat *sb) {
     struct file_info *fi = f;
-    off_t length;
 
     assert(fi);
 
     pthread_mutex_lock(&fi->mutex);
-    length = fi->length;
-    pthread_mutex_unlock(&fi->mutex);
+    sb->st_size = fi->length;
 
-    return length;
+    /* use Last-Modified from server if not modified locally */
+    if (fi->mtime_modified)
+        sb->st_mtime = fi->mtime;
+
+    pthread_mutex_unlock(&fi->mutex);
+}
+
+/* returns 0 if a file was cached, -1 if uncached */
+int file_cache_set_mtime(const char *path, time_t mtime) {
+    struct file_info *fi = file_cache_get(path);
+    int r = -1;
+
+    if (fi) {
+        pthread_mutex_lock(&fi->mutex);
+
+        if (fi->writable) {
+            fi->mtime = mtime;
+            fi->mtime_modified = 1;
+            r = 0;
+        }
+
+        pthread_mutex_unlock(&fi->mutex);
+
+        file_cache_unref(fi);
+    }
+
+    return r;
 }

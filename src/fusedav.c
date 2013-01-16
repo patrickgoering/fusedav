@@ -224,8 +224,8 @@ static void fill_stat(struct stat* st, const ne_prop_result_set *results, int is
         st->st_size = gcl ? atoll(gcl) : 0;
     }
 
-    st->st_atime = time(NULL);
     st->st_mtime = glm ? ne_rfc1123_parse(glm) : 0;
+    st->st_atime = st->st_mtime;
     st->st_ctime = cd ? ne_iso8601_parse(cd) : 0;
     
     st->st_blocks = (st->st_size+511)/512;

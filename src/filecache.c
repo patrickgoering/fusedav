@@ -68,6 +68,13 @@ struct file_info {
     struct file_info *next;
 };
 
+struct read_args {
+    char *buf;
+    size_t size;
+    off_t offset;
+    off_t end;
+};
+
 static struct file_info *files = NULL;
 static pthread_mutex_t files_mutex = PTHREAD_MUTEX_INITIALIZER;
 static const char *tmpdir;
@@ -229,6 +236,7 @@ void* file_cache_open(const char *path, int flags) {
     } else {
         fi = calloc(1, sizeof(struct file_info));
         assert(fi);
+        fi->fd = -1;
         fi->filename = strdup(path);
         assert(fi->filename);
         pthread_mutex_init(&fi->mutex, NULL);
@@ -240,15 +248,24 @@ void* file_cache_open(const char *path, int flags) {
     pthread_mutex_unlock(&files_mutex);
 
     if (cached) {
+        int fail = 0;
+
         pthread_mutex_lock(&fi->mutex);
+
         file_cache_update_flags_unlocked(fi, flags);
+
+        if (fi->fd < 0 && fi->writable) {
+            if ((fi->fd = file_cache_tmp("cache")) < 0) {
+                /* try not to break things for exising readers */
+                fi->writable = 0;
+                fail = 1;
+            }
+        }
+
         pthread_mutex_unlock(&fi->mutex);
 
-        return fi;
+        return fail ? NULL : fi;
     }
-
-    if ((fi->fd = file_cache_tmp("cache")) < 0)
-        goto fail;
 
     req = ne_request_create(session, "HEAD", path);
     assert(req);
@@ -268,6 +285,10 @@ void* file_cache_open(const char *path, int flags) {
     ne_request_destroy(req);
 
     file_cache_update_flags_unlocked(fi, flags);
+    if (fi->writable) {
+        if ((fi->fd = file_cache_tmp("cache")) < 0)
+            goto fail;
+    }
     fi->ref = 1;
     pthread_mutex_unlock(&fi->mutex);
 
@@ -318,12 +339,7 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
     if (l <= fi->present)
         return 0;
 
-    if (offset && ! fi->writable) {
-        if (lseek(fi->fd, 0, SEEK_SET) != 0)
-            return -1;
-        range.start = *offset;
-        *offset = 0; /* caller will call pread() on zero */
-    } else if (offset && *offset > fi->present) {
+    if (offset && *offset > fi->present) {
         if (lseek(fi->fd, *offset, SEEK_SET) != *offset)
             return -1;
         range.start = *offset;
@@ -350,6 +366,82 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
 #undef NE_GET_RANGE
 }
 
+static int accept_206(void *userdata, ne_request *req, const ne_status *status) {
+    struct read_args *ra = userdata;
+    const char *value;
+    long long start, end;
+
+    if (status->code != 206)
+        return 0;
+
+    value = ne_get_response_header(req, "Content-Range");
+    if (value == NULL)
+        return 0;
+
+    if (sscanf(value, "bytes %lld-%lld", &start, &end) == 2)
+        return (start == ra->offset && end == ra->end);
+
+    fprintf(stderr, "invalid Content-Range response: %s\n", value);
+    return 0;
+}
+
+static int read_copy(void *userdata, const char *block, size_t len) {
+    struct read_args *ra = userdata;
+
+    /* avoid buffer overflow */
+    if (len > ra->size)
+        return 1;
+
+    memcpy(ra->buf, block, len);
+    ra->buf += len;
+    ra->size -= len;
+    return 0; /* success */
+}
+
+static ssize_t
+read_to_buffer_unlocked(struct file_info *fi, struct read_args *ra) {
+    ne_session *session;
+    ne_request *req;
+    char brange[64];
+    char *start = ra->buf;
+    int ret;
+
+    if (ra->size == 0)
+        return 0;
+
+    assert(fi);
+
+    if (!(session = session_get(1))) {
+        errno = EIO;
+        return -1;
+    }
+
+    ra->end = ra->offset + ra->size;
+    if (ra->end > fi->length)
+        ra->end = fi->length;
+    if (ra->end > fi->server_length)
+        ra->end = fi->server_length;
+
+    ra->end -= 1; /* byte ranges are inclusive */
+    ne_snprintf(brange, sizeof(brange), "bytes=%lld-%lld",
+                (long long)ra->offset, (long long)ra->end);
+
+    req = ne_request_create(session, "GET", fi->filename);
+    assert(req);
+    ne_add_request_header(req, "Range", brange);
+    ne_add_request_header(req, "Accept-Ranges", "bytes");
+    ne_add_response_body_reader(req, accept_206, read_copy, ra);
+
+    ret = ne_request_dispatch(req);
+    ne_request_destroy(req);
+
+    if (ret == NE_OK)
+        return (ssize_t)(ra->buf - start);
+
+    errno = EIO;
+    return -1;
+}
+
 int file_cache_read(void *f, char *buf, size_t size, off_t offset) {
     struct file_info *fi = f;
     ssize_t r = -1;
@@ -358,12 +450,21 @@ int file_cache_read(void *f, char *buf, size_t size, off_t offset) {
 
     pthread_mutex_lock(&fi->mutex);
 
-    if (load_up_to_unlocked(fi, size, &offset) < 0)
-        goto finish;
+    if (!fi->writable) {
+        struct read_args ra;
 
-    if ((r = pread(fi->fd, buf, size, offset)) < 0)
-        goto finish;
+        ra.buf = buf;
+        ra.size = size;
+        ra.offset = offset;
 
+        r = read_to_buffer_unlocked(fi, &ra);
+    } else {
+        if (load_up_to_unlocked(fi, size, &offset) < 0)
+            goto finish;
+
+        if ((r = pread(fi->fd, buf, size, offset)) < 0)
+            goto finish;
+    }
 finish:
     
     pthread_mutex_unlock(&fi->mutex);
@@ -415,6 +516,10 @@ int file_cache_truncate(void *f, off_t s) {
     int r;
 
     assert(fi);
+    if (!fi->writable) {
+        errno = EACCES;
+        return -1;
+    }
 
     pthread_mutex_lock(&fi->mutex);
 

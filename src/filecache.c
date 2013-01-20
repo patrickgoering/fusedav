@@ -634,6 +634,7 @@ void file_cache_fill_stat(void *f, struct stat *sb) {
 
     pthread_mutex_lock(&fi->mutex);
     sb->st_size = fi->canon_length;
+    sb->st_blocks = (sb->st_size + 511) / 512;
 
     /* use Last-Modified from server if not modified locally */
     if (fi->mtime_modified)

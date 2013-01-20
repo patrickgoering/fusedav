@@ -51,8 +51,10 @@
 struct file_info {
     char *filename;
     int fd;
-    off_t server_length, length, present;
-    
+    off_t server_length;
+    off_t canon_length;
+    off_t cached_length;
+
     int readable;
     int writable;
 
@@ -278,9 +280,9 @@ void* file_cache_open(const char *path, int flags) {
 
     if (!(length = ne_get_response_header(req, "Content-Length")))
         /* dirty hack, since Apache doesn't send the file size if the file is empty */
-        fi->server_length = fi->length = 0; 
+        fi->server_length = fi->canon_length = 0;
     else
-        fi->server_length = fi->length = (off_t)atoll(length);
+        fi->server_length = fi->canon_length = (off_t)atoll(length);
 
     ne_request_destroy(req);
 
@@ -308,7 +310,7 @@ fail:
     return NULL;
 }
 
-static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) {
+static int load_up_to_unlocked(struct file_info *fi, off_t l) {
 #ifndef ne_get_range64
 #define NE_GET_RANGE ne_get_range
     ne_content_range range;
@@ -317,11 +319,6 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
     ne_content_range64 range;
 #endif
     ne_session *session;
-    off_t l = size;
-    int contiguous = 0;
-
-    if (offset)
-        l += *offset;
 
     assert(fi);
 
@@ -330,26 +327,21 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
         return -1;
     }
 
-    if (l > fi->length)
-        l = fi->length;
-
+    /* can't read more than what the server has */
     if (l > fi->server_length)
         l = fi->server_length;
+
+    /* if we got truncated, our canonical length was truncated, too */
+    if (l > fi->canon_length)
+        l = fi->canon_length;
     
-    if (l <= fi->present)
+    if (l <= fi->cached_length)
         return 0;
 
-    if (offset && *offset > fi->present) {
-        if (lseek(fi->fd, *offset, SEEK_SET) != *offset)
+    if (lseek(fi->fd, fi->cached_length, SEEK_SET) != fi->cached_length)
             return -1;
-        range.start = *offset;
-    } else {
-        if (lseek(fi->fd, fi->present, SEEK_SET) != fi->present)
-                return -1;
-        range.start = fi->present;
-        contiguous = 1;
-    }
 
+    range.start = fi->cached_length;
     range.end = l-1;
     range.total = 0;
     
@@ -359,8 +351,7 @@ static int load_up_to_unlocked(struct file_info *fi, off_t size, off_t *offset) 
         return -1;
     }
 
-    if (contiguous)
-        fi->present = l;
+    fi->cached_length = l;
 
     return 0;
 #undef NE_GET_RANGE
@@ -417,10 +408,10 @@ read_to_buffer_unlocked(struct file_info *fi, struct read_args *ra) {
     }
 
     ra->end = ra->offset + ra->size;
-    if (ra->end > fi->length)
-        ra->end = fi->length;
     if (ra->end > fi->server_length)
         ra->end = fi->server_length;
+    if (ra->end > fi->canon_length)
+        ra->end = fi->canon_length;
 
     ra->end -= 1; /* byte ranges are inclusive */
     ne_snprintf(brange, sizeof(brange), "bytes=%lld-%lld",
@@ -459,7 +450,7 @@ int file_cache_read(void *f, char *buf, size_t size, off_t offset) {
 
         r = read_to_buffer_unlocked(fi, &ra);
     } else {
-        if (load_up_to_unlocked(fi, size, &offset) < 0)
+        if (load_up_to_unlocked(fi, size) < 0)
             goto finish;
 
         if ((r = pread(fi->fd, buf, size, offset)) < 0)
@@ -491,17 +482,17 @@ int file_cache_write(void *f, const char *buf, size_t size, off_t offset) {
         goto finish;
     }
 
-    if (load_up_to_unlocked(fi, offset, NULL) < 0)
+    if (load_up_to_unlocked(fi, offset) < 0)
         goto finish;
         
     if ((r = pwrite(fi->fd, buf, size, offset)) < 0)
         goto finish;
 
-    if (offset+size > fi->present)
-        fi->present = offset+size;
+    if (offset+size > fi->cached_length)
+        fi->cached_length = offset+size;
 
-    if (offset+size > fi->length)
-        fi->length = offset+size;
+    if (offset+size > fi->canon_length)
+        fi->canon_length = offset+size;
 
     file_cache_modified(fi);
 
@@ -523,11 +514,26 @@ int file_cache_truncate(void *f, off_t s) {
 
     pthread_mutex_lock(&fi->mutex);
 
-    fi->length = s;
-    r = ftruncate(fi->fd, fi->length);
-    file_cache_modified(fi);
-    if (fi->present > s)
-        fi->present = s;
+    r = ftruncate(fi->fd, s);
+    if (r == 0) {
+        if (fi->canon_length > s) {
+            /* truncate shortened the file, forget cached parts */
+            if (fi->cached_length > s)
+                fi->cached_length = s;
+        } else if (fi->canon_length < s) {
+            /*
+             * truncate extended the file,
+             * if it was fully-cached before, it's still fully-cached now
+             */
+            if (fi->canon_length == fi->cached_length)
+                fi->cached_length = s;
+        } else {
+            assert(fi->canon_length == s && "nothing changes");
+        }
+
+        fi->canon_length = s;
+        file_cache_modified(fi);
+    }
 
     pthread_mutex_unlock(&fi->mutex);
 
@@ -563,7 +569,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
         goto finish;
     }
     
-    if (load_up_to_unlocked(fi, fi->length, NULL) < 0)
+    if (load_up_to_unlocked(fi, fi->canon_length) < 0)
         goto finish;
 
     if (lseek(fi->fd, 0, SEEK_SET) == (off_t)-1)
@@ -627,7 +633,7 @@ void file_cache_fill_stat(void *f, struct stat *sb) {
     assert(fi);
 
     pthread_mutex_lock(&fi->mutex);
-    sb->st_size = fi->length;
+    sb->st_size = fi->canon_length;
 
     /* use Last-Modified from server if not modified locally */
     if (fi->mtime_modified)

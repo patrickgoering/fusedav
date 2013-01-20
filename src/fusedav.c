@@ -49,7 +49,6 @@
 
 #include <fuse.h>
 
-#include "statcache.h"
 #include "filecache.h"
 #include "session.h"
 #include "fusedav.h"
@@ -192,8 +191,7 @@ static int chmod_internal(
         fprintf(stderr, "PROPPATCH failed: %s\n", ne_get_error(session));
         r = -ENOTSUP;
     }
-
-    return r;
+    return file_cache_chmod(path, mode);
 }
 
 static void fill_stat(struct stat* st, const ne_prop_result_set *results, int is_dir) {
@@ -269,30 +267,11 @@ static void getdir_propfind_callback(void *userdata, const ne_uri *u, const ne_p
         else
             t = fn;
 
-        dir_cache_add(f->root, t);
         f->filler(f->buf, h = ne_path_unescape(t), NULL, 0);
         free(h);
     }
 
     fill_stat(&st, results, is_dir);
-    stat_cache_set(fn, &st);
-}
-
-static void getdir_cache_callback(
-        const char *root,
-        const char *fn,
-        void *user) {
-    
-    struct fill_info *f = user;
-    char path[PATH_MAX];
-    char *h;
-
-    assert(f);
-    
-    snprintf(path, sizeof(path), "%s/%s", !strcmp(root, "/") ? "" : root, fn);
-    
-    f->filler(f->buf, h = ne_path_unescape(fn), NULL, 0);
-    free(h);
 }
 
 static int dav_readdir(
@@ -317,23 +296,12 @@ static int dav_readdir(
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
     
-    if (dir_cache_enumerate(path, getdir_cache_callback, &f) < 0) {
+    if (!(session = session_get(1)))
+        return -EIO;
 
-        if (debug)
-            fprintf(stderr, "DIR-CACHE-MISS\n");
-        
-        if (!(session = session_get(1))) 
-            return -EIO;
-
-        dir_cache_begin(path);
-        
-        if (simple_propfind_with_redirect(session, path, NE_DEPTH_ONE, query_properties, getdir_propfind_callback, &f) != NE_OK) {
-            dir_cache_finish(path, 2);
-            fprintf(stderr, "PROPFIND failed: %s\n", ne_get_error(session));
-            return -ENOENT;
-        }
-
-        dir_cache_finish(path, 1);
+    if (simple_propfind_with_redirect(session, path, NE_DEPTH_ONE, query_properties, getdir_propfind_callback, &f) != NE_OK) {
+        fprintf(stderr, "PROPFIND failed: %s\n", ne_get_error(session));
+        return -ENOENT;
     }
 
     return 0;
@@ -351,29 +319,41 @@ static void getattr_propfind_callback(void *userdata, const ne_uri *u, const ne_
     strip_trailing_slash(fn, &is_dir);
     
     fill_stat(st, results, is_dir);
-    stat_cache_set(fn, st);
 }
 
 static int get_stat(const char *path, struct stat *stbuf) {
     ne_session *session;
+    void *f;
 
     if (!(session = session_get(1))) 
         return -EIO;
 
-    if (stat_cache_get(path, stbuf) == 0) {
-        return stbuf->st_mode == 0 ? -ENOENT : 0;
-    } else {
-        if (debug)
-            fprintf(stderr, "STAT-CACHE-MISS\n");
+    /* file may be open for writing, check the cache for updates */
+    f = file_cache_get(path);
 
-        if (simple_propfind_with_redirect(session, path, NE_DEPTH_ZERO, query_properties, getattr_propfind_callback, stbuf) != NE_OK) {
-            stat_cache_invalidate(path);
-            fprintf(stderr, "PROPFIND failed: %s\n", ne_get_error(session));
-            return -ENOENT;
+    if (simple_propfind_with_redirect(session, path, NE_DEPTH_ZERO, query_properties, getattr_propfind_callback, stbuf) != NE_OK) {
+        /* file may be open locally, but not on the server */
+        if (f) {
+            memset(stbuf, 0, sizeof(struct stat));
+            stbuf->st_ctime = time(NULL);
+            stbuf->st_nlink = 1;
+            stbuf->st_uid = getuid();
+            stbuf->st_gid = getgid();
+            goto local_only;
         }
 
-        return 0;
+        fprintf(stderr, "PROPFIND failed: %s\n", ne_get_error(session));
+
+        return -ENOENT;
     }
+
+    if (f) {
+local_only:
+        file_cache_fill_stat(f, stbuf);
+        file_cache_unref(f);
+    }
+
+    return 0;
 }
 
 static int dav_getattr(const char *path, struct stat *stbuf) {
@@ -407,9 +387,6 @@ static int dav_unlink(const char *path) {
         return -ENOENT;
     }
 
-    stat_cache_invalidate(path);
-    dir_cache_invalidate_parent(path);
-    
     return 0;
 }
 
@@ -440,9 +417,6 @@ static int dav_rmdir(const char *path) {
         return -ENOENT;
     }
 
-    stat_cache_invalidate(path);
-    dir_cache_invalidate_parent(path);
-
     return 0;
 }
 
@@ -465,9 +439,6 @@ static int dav_mkdir(const char *path, __unused mode_t mode) {
         return -ENOENT;
     }
 
-    stat_cache_invalidate(path);
-    dir_cache_invalidate_parent(path);
-    
     return 0;
 }
 
@@ -503,12 +474,6 @@ static int dav_rename(const char *from, const char *to) {
         goto finish;
     }
     
-    stat_cache_invalidate(from);
-    stat_cache_invalidate(to);
-
-    dir_cache_invalidate_parent(from);
-    dir_cache_invalidate_parent(to);
-
 finish:
 
     free(_from);
@@ -625,9 +590,6 @@ static int dav_mknod(const char *path, mode_t mode, __unused dev_t rdev) {
 
     if (mode & 0111)
         r = chmod_internal(session, path, mode);
-
-    stat_cache_invalidate(path);
-    dir_cache_invalidate_parent(path);
 
     return r;
 }
@@ -791,8 +753,6 @@ static int dav_utime(const char *path, struct utimbuf *buf) {
 
     /* file is not open, update DAV server immediately */
     r = fusedav_set_mtime(path, buf->modtime);
-    if (r == 0)
-        stat_cache_invalidate(path);
     
     return r;
 }
@@ -1101,8 +1061,6 @@ static int dav_setxattr(
         goto finish;
     }
     
-    stat_cache_invalidate(path);
-
 finish:
     free(value_fixed);
     
@@ -1150,8 +1108,6 @@ static int dav_removexattr(const char *path, const char *name) {
         goto finish;
     }
     
-    stat_cache_invalidate(path);
-
 finish:
     
     return r;
@@ -1173,8 +1129,6 @@ static int dav_chmod(const char *path, mode_t mode) {
         goto finish;
     }
     r = chmod_internal(session, path, mode);
-
-    stat_cache_invalidate(path);
 
 finish:
     
@@ -1462,7 +1416,6 @@ int main(int argc, char *argv[]) {
     mask = umask(0);
     umask(mask);
 
-    cache_alloc();
     file_cache_init();
 
     if (setup_signal_handlers() < 0)
@@ -1578,7 +1531,6 @@ finish:
         fuse_unmount(mountpoint);
     
     file_cache_close_all();
-    cache_free();
     session_free();
     
     return ret;

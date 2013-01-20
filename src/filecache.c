@@ -44,7 +44,6 @@
 #include <ne_basic.h>
 
 #include "filecache.h"
-#include "statcache.h"
 #include "fusedav.h"
 #include "session.h"
 
@@ -589,8 +588,6 @@ int file_cache_sync_unlocked(struct file_info *fi) {
     now = time(NULL);
     fi->modified = 0;
     r = file_cache_sync_mtime_unlocked(fi, now);
-    stat_cache_invalidate(fi->filename);
-    dir_cache_invalidate_parent(fi->filename);
 
 finish:
     
@@ -634,12 +631,39 @@ void file_cache_fill_stat(void *f, struct stat *sb) {
 
     pthread_mutex_lock(&fi->mutex);
     sb->st_size = fi->canon_length;
+    sb->st_blocks = (sb->st_size+511)/512;
 
     /* use Last-Modified from server if not modified locally */
     if (fi->mtime_modified)
-        sb->st_mtime = fi->mtime;
+        sb->st_atime = sb->st_mtime = fi->mtime;
+
+    if (sb->st_mode == 0 && fi->fd >= 0) {
+        struct stat sbuf;
+        if (fstat(fi->fd, &sbuf) == 0)
+            sb->st_mode = sbuf.st_mode & ~mask;
+    }
 
     pthread_mutex_unlock(&fi->mutex);
+}
+
+/* returns zero on success (or file is uncached), negative error on failure */
+int file_cache_chmod(const char *path, mode_t mode)
+{
+    int r = 0;
+    struct file_info *fi = file_cache_get(path);
+
+    if (fi) {
+        pthread_mutex_lock(&fi->mutex);
+        if (fi->fd >= 0) {
+            r = fchmod(fi->fd, mode);
+            if (r == -1)
+                r = -errno;
+        }
+        pthread_mutex_unlock(&fi->mutex);
+        file_cache_unref(fi);
+    }
+
+    return r;
 }
 
 /* returns 0 if a file was cached, -1 if uncached */

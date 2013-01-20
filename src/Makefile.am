@@ -19,7 +19,6 @@
 bin_PROGRAMS=fusedav
 
 fusedav_SOURCES=fusedav.c fusedav.h \
-				statcache.c statcache.h \
 				filecache.c filecache.h \
 				session.c session.h
 

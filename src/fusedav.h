@@ -24,6 +24,7 @@
 #include <time.h>
 extern int debug;
 int fusedav_set_mtime(const char *path, time_t mtime);
+extern mode_t mask;
 
 #ifdef __GNUC__
 #define __unused __attribute__ ((unused))

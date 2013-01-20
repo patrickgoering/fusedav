@@ -38,6 +38,7 @@ int file_cache_close_all(void);
 
 void file_cache_fill_stat(void *f, struct stat *sb);
 int file_cache_set_mtime(const char *path, time_t mtime);
+int file_cache_chmod(const char *path, mode_t mode);
 
 void file_cache_init(void);
 int file_cache_tmp(const char *id);

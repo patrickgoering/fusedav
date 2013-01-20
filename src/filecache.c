@@ -356,6 +356,7 @@ static int load_up_to_unlocked(struct file_info *fi, off_t l) {
 #undef NE_GET_RANGE
 }
 
+/* returns true on proper 206 Partial Content response */
 static int accept_206(void *userdata, ne_request *req, const ne_status *status) {
     struct read_args *ra = userdata;
     const char *value;
@@ -368,6 +369,7 @@ static int accept_206(void *userdata, ne_request *req, const ne_status *status) 
     if (value == NULL)
         return 0;
 
+    /* this format is specified in RFC 2616, section 14.16 */
     if (sscanf(value, "bytes %lld-%lld", &start, &end) == 2)
         return (start == ra->offset && end == ra->end);
 

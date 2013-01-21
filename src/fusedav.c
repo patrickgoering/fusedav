@@ -259,7 +259,11 @@ static void getdir_propfind_callback(void *userdata, const ne_uri *u, const ne_p
     fn[sizeof(fn)-1] = 0;
     strip_trailing_slash(fn, &is_dir);
 
-    if (strcmp(fn, f->root) && fn[0]) {
+    fill_stat(&st, results, is_dir);
+
+    if (strcmp(fn, f->root) == 0) {
+        f->filler(f->buf, ".", &st, 0);
+    } else if (fn[0]) {
         char *h;
         
         if ((t = strrchr(fn, '/')))
@@ -267,11 +271,9 @@ static void getdir_propfind_callback(void *userdata, const ne_uri *u, const ne_p
         else
             t = fn;
 
-        f->filler(f->buf, h = ne_path_unescape(t), NULL, 0);
+        f->filler(f->buf, h = ne_path_unescape(t), &st, 0);
         free(h);
     }
-
-    fill_stat(&st, results, is_dir);
 }
 
 static int dav_readdir(
@@ -293,7 +295,6 @@ static int dav_readdir(
     f.filler = filler;
     f.root = path;
 
-    filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
     
     if (!(session = session_get(1)))

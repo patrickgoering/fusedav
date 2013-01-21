@@ -589,6 +589,7 @@ int file_cache_sync_unlocked(struct file_info *fi) {
 
     now = time(NULL);
     fi->modified = 0;
+    fi->server_length = fi->canon_length;
     r = file_cache_sync_mtime_unlocked(fi, now);
 
 finish:

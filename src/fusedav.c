@@ -1389,7 +1389,7 @@ static void *lock_thread_func(__unused void *p) {
 int main(int argc, char *argv[]) {
     int c;
     char *u = NULL, *p = NULL, *o = NULL;
-    int fuse_fd = -1;
+    struct fuse_chan *ch = NULL;
     int ret = 1;
     char mountpoint[PATH_MAX];
     pthread_t lock_thread;
@@ -1494,12 +1494,12 @@ int main(int argc, char *argv[]) {
         mount_args.argc += 2;
     }
     
-    if ((fuse_fd = fuse_mount(mountpoint, &mount_args)) < 0) {
+    if ((ch = fuse_mount(mountpoint, &mount_args)) == NULL) {
         fprintf(stderr, "Failed to mount FUSE file system.\n");
         goto finish;
     }
 
-    if (!(fuse = fuse_new(fuse_fd, &mount_args, &dav_oper, sizeof(dav_oper)))) {
+    if (!(fuse = fuse_new(ch, &mount_args, &dav_oper, sizeof(dav_oper), NULL))) {
         fprintf(stderr, "Failed to create FUSE object.\n");
         goto finish;
     }
@@ -1534,8 +1534,8 @@ finish:
     if (fuse)
         fuse_destroy(fuse);
     
-    if (fuse_fd >= 0)
-        fuse_unmount(mountpoint);
+    if (ch)
+        fuse_unmount(mountpoint, ch);
     
     file_cache_close_all();
     session_free();

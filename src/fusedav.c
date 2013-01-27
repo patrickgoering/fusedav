@@ -78,6 +78,7 @@ struct fill_info {
     void *buf;
     fuse_fill_dir_t filler;
     const char *root;
+    int root_seen;
 };
 
 static int get_stat(const char *path, struct stat *stbuf);
@@ -263,6 +264,7 @@ static void getdir_propfind_callback(void *userdata, const ne_uri *u, const ne_p
 
     if (strcmp(fn, f->root) == 0) {
         f->filler(f->buf, ".", &st, 0);
+        f->root_seen = 1;
     } else if (fn[0]) {
         char *h;
         
@@ -294,6 +296,7 @@ static int dav_readdir(
     f.buf = buf;
     f.filler = filler;
     f.root = path;
+    f.root_seen = 0;
 
     filler(buf, "..", NULL, 0);
     
@@ -304,6 +307,9 @@ static int dav_readdir(
         fprintf(stderr, "PROPFIND failed: %s\n", ne_get_error(session));
         return -ENOENT;
     }
+
+    if (!f.root_seen)
+        filler(buf, ".", NULL, 0);
 
     return 0;
 }

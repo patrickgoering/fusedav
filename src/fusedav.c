@@ -1167,6 +1167,7 @@ static int dav_chown(const char *path, uid_t uid, gid_t gid) {
 static struct fuse_operations dav_oper = {
     .getattr	 = dav_getattr,
     .readdir	 = dav_readdir,
+    .readdir_plus = dav_readdir,
     .mknod	 = dav_mknod,
     .mkdir	 = dav_mkdir,
     .unlink	 = dav_unlink,

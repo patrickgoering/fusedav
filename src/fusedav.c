@@ -1532,12 +1532,12 @@ finish:
         ne_lockstore_destroy(lock_store);
     }
 
-    if (fuse)
-        fuse_destroy(fuse);
-    
     if (ch)
         fuse_unmount(mountpoint, ch);
-    
+
+    if (fuse)
+        fuse_destroy(fuse);
+
     file_cache_close_all();
     session_free();
     

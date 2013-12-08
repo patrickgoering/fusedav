@@ -740,26 +740,24 @@ finish:
     return r;
 }
 
-static int dav_utime(const char *path, struct utimbuf *buf) {
+static int dav_utimens(const char *path, const struct timespec *ts) {
     int r;
+    const struct timespec *mtime = &ts[1];
 
     assert(path);
-    assert(buf);
+    assert(ts);
 
     path = path_cvt(path);
-
-    if (debug)
-        fprintf(stderr, "utime(%s, %lu, %lu)\n", path, (unsigned long) buf->actime, (unsigned long) buf->modtime);
 
     /*
      * If the file is open in the cache, just update it in the cache.
      * It will be synced when the cached file is released.
      */
-    if (file_cache_set_mtime(path, buf->modtime) == 0)
+    if (file_cache_set_mtime(path, mtime->tv_sec) == 0)
         return 0;
 
     /* file is not open, update DAV server immediately */
-    r = fusedav_set_mtime(path, buf->modtime);
+    r = fusedav_set_mtime(path, mtime->tv_sec);
     
     return r;
 }
@@ -1167,7 +1165,7 @@ static int dav_chown(const char *path, uid_t uid, gid_t gid) {
 static struct fuse_operations dav_oper = {
     .getattr	 = dav_getattr,
     .readdir	 = dav_readdir,
-    .readdir_plus = dav_readdir,
+    .readdirplus = dav_readdir,
     .mknod	 = dav_mknod,
     .mkdir	 = dav_mkdir,
     .unlink	 = dav_unlink,
@@ -1176,7 +1174,7 @@ static struct fuse_operations dav_oper = {
     .chmod       = dav_chmod,
     .chown	 = dav_chown,
     .truncate	 = dav_truncate,
-    .utime       = dav_utime,
+    .utimens     = dav_utimens,
     .flush       = dav_flush,
     .open	 = dav_open,
     .read	 = dav_read,

@@ -110,7 +110,7 @@ AC_CHECK_FUNCS([ftruncate memset strdup strerror strrchr memchr strchr strcspn])
 AC_CHECK_LIB([pthread], [pthread_create])
 
 PKG_CHECK_MODULES(NEON, [ neon >= 0.26 ])
-PKG_CHECK_MODULES(FUSE, [ fuse >= 3.0 ])
+PKG_CHECK_MODULES(FUSE, [ fuse3 >= 3.0 ])
 
 # LYNX documentation generation
 AC_ARG_ENABLE(lynx,

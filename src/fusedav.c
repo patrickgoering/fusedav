@@ -79,6 +79,7 @@ struct fill_info {
     fuse_fill_dir_t filler;
     const char *root;
     int root_seen;
+    enum fuse_fill_dir_flags flags;
 };
 
 static int get_stat(const char *path, struct stat *stbuf);
@@ -263,17 +264,17 @@ static void getdir_propfind_callback(void *userdata, const ne_uri *u, const ne_p
     fill_stat(&st, results, is_dir);
 
     if (strcmp(fn, f->root) == 0) {
-        f->filler(f->buf, ".", &st, 0);
+        f->filler(f->buf, ".", &st, 0, f->flags);
         f->root_seen = 1;
     } else if (fn[0]) {
         char *h;
-        
+
         if ((t = strrchr(fn, '/')))
             t++;
         else
             t = fn;
 
-        f->filler(f->buf, h = ne_path_unescape(t), &st, 0);
+        f->filler(f->buf, h = ne_path_unescape(t), &st, 0, f->flags);
         free(h);
     }
 }
@@ -283,7 +284,8 @@ static int dav_readdir(
         void *buf,
         fuse_fill_dir_t filler,
         __unused off_t offset,
-        __unused struct fuse_file_info *fi) {
+        __unused struct fuse_file_info *fi,
+	enum fuse_readdir_flags flags) {
     
     struct fill_info f;
     ne_session *session;
@@ -297,8 +299,11 @@ static int dav_readdir(
     f.filler = filler;
     f.root = path;
     f.root_seen = 0;
+    f.flags = 0;
+    if (flags & FUSE_READDIR_PLUS)
+	f.flags = FUSE_FILL_DIR_PLUS;
 
-    filler(buf, "..", NULL, 0);
+    filler(buf, "..", NULL, 0, f.flags);
     
     if (!(session = session_get(1)))
         return -EIO;
@@ -309,7 +314,7 @@ static int dav_readdir(
     }
 
     if (!f.root_seen)
-        filler(buf, ".", NULL, 0);
+        filler(buf, ".", NULL, 0, f.flags);
 
     return 0;
 }
@@ -1165,7 +1170,6 @@ static int dav_chown(const char *path, uid_t uid, gid_t gid) {
 static struct fuse_operations dav_oper = {
     .getattr	 = dav_getattr,
     .readdir	 = dav_readdir,
-    .readdirplus = dav_readdir,
     .mknod	 = dav_mknod,
     .mkdir	 = dav_mkdir,
     .unlink	 = dav_unlink,
